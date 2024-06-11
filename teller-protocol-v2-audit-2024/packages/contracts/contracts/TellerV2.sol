@@ -584,7 +584,7 @@ contract TellerV2 is
         Bid storage bid = bids[_bidId];
 
         address sender = _msgSenderForMarket(bid.marketplaceId);
-        require(sender == bid.lender, "only lender can claim NFT");
+        require(sender == getLoanLender(_bidId), "only lender can claim NFT");
 
         // set lender address to the lender manager so we know to check the owner of the NFT for the true lender
         bid.lender = address(USING_LENDER_MANAGER);
@@ -754,21 +754,8 @@ contract TellerV2 is
         address sender = _msgSenderForMarket(bid.marketplaceId);
         require(sender == bid.lender, "only lender can close loan");
 
-        /*
 
-
-          address collateralManagerForBid = address(_getCollateralManagerForBid(_bidId)); 
-
-          if( collateralManagerForBid == address(collateralManagerV2) ){
-             ICollateralManagerV2(collateralManagerForBid).lenderClaimCollateral(_bidId,_collateralRecipient);
-          }else{
-             require( _collateralRecipient == address(bid.lender));
-             ICollateralManager(collateralManagerForBid).lenderClaimCollateral(_bidId );
-          }
-          
-          */
-
-        collateralManager.lenderClaimCollateral(_bidId);
+        collateralManager.lenderClaimCollateralWithRecipient(_bidId, _collateralRecipient);
 
         emit LoanClosed(_bidId);
     }
@@ -918,7 +905,7 @@ contract TellerV2 is
 
             uint256 balanceBefore = bid.loanDetails.lendingToken.balanceOf(
                 address(this)
-            ); 
+            );
 
             //if unable, pay to escrow
             bid.loanDetails.lendingToken.safeTransferFrom(
@@ -1102,6 +1089,10 @@ contract TellerV2 is
         return
             uint32(block.timestamp) >
             dueDate + defaultDuration + _additionalDelay;
+    }
+
+    function getEscrowVault() external view returns(address){
+        return address(escrowVault);
     }
 
     function getBidState(uint256 _bidId)

@@ -33,13 +33,14 @@ import { ILoanRepaymentListener } from "../../../interfaces/ILoanRepaymentListen
 
 import { ILoanRepaymentCallbacks } from "../../../interfaces/ILoanRepaymentCallbacks.sol";
 
+import { IEscrowVault } from "../../../interfaces/IEscrowVault.sol";
 import { ILenderCommitmentGroup } from "../../../interfaces/ILenderCommitmentGroup.sol";
 import { Payment } from "../../../TellerV2Storage.sol";
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 /*
  
 
@@ -70,9 +71,13 @@ contract LenderCommitmentGroup_Smart is
 
     uint256 public immutable STANDARD_EXPANSION_FACTOR = 1e18;
 
+    uint256 public immutable MIN_TWAP_INTERVAL = 3;
+
     uint256 public immutable UNISWAP_EXPANSION_FACTOR = 2**96;
 
     uint256 public immutable EXCHANGE_RATE_EXPANSION_FACTOR = 1e36;  
+
+    using SafeERC20 for IERC20;
 
     /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
     address public immutable TELLER_V2;
@@ -181,6 +186,7 @@ contract LenderCommitmentGroup_Smart is
             _uniswapPoolFee
         );
 
+        require(_twapInterval > MIN_TWAP_INTERVAL, "Invalid TWAP Interval");
         require(UNISWAP_V3_POOL != address(0), "Invalid uniswap pool address");
 
         marketId = _marketId;
@@ -330,7 +336,7 @@ contract LenderCommitmentGroup_Smart is
             return 0;
         }
 
-        value_ = (amount * EXCHANGE_RATE_EXPANSION_FACTOR) / rate;
+        value_ = MathUpgradeable.mulDiv(amount ,  EXCHANGE_RATE_EXPANSION_FACTOR   ,  rate ) ;
     }
 
     function acceptFundsForAcceptBid(
@@ -349,7 +355,7 @@ contract LenderCommitmentGroup_Smart is
             "Mismatching collateral token"
         );
         //the interest rate must be at least as high has the commitment demands. The borrower can use a higher interest rate although that would not be beneficial to the borrower.
-        require(_interestRate >= getMinInterestRate(), "Invalid interest rate");
+        require(_interestRate >= getMinInterestRate(_principalAmount), "Invalid interest rate");
         //the loan duration must be less than the commitment max loan duration. The lender who made the commitment expects the money to be returned before this window.
         require(_loanDuration <= maxLoanDuration, "Invalid loan max duration");
 
@@ -378,7 +384,16 @@ contract LenderCommitmentGroup_Smart is
         totalPrincipalTokensLended += _principalAmount;
 
         activeBids[_bidId] = true; //bool for now
-        //emit event
+
+
+        emit BorrowerAcceptedFunds(
+            _borrower,
+            _bidId,
+            _principalAmount,
+            _collateralAmount,
+            _loanDuration,
+            _interestRate
+         );
     }
 
     function _acceptBidWithRepaymentListener(uint256 _bidId) internal {
@@ -423,7 +438,11 @@ contract LenderCommitmentGroup_Smart is
         uint256 _bidId,
         int256 _tokenAmountDifference
     ) public bidIsActiveForGroup(_bidId) {
-        uint256 amountDue = getAmountOwedForBid(_bidId, false);
+
+        //use original principal amount as amountDue
+
+        uint256 amountDue = _getAmountOwedForBid(_bidId);
+
 
         uint256 loanDefaultedTimeStamp = ITellerV2(TELLER_V2)
             .getLoanDefaultTimestamp(_bidId);
@@ -438,12 +457,12 @@ contract LenderCommitmentGroup_Smart is
             "Insufficient tokenAmountDifference"
         );
 
-        if (_tokenAmountDifference > 0) {
+        if (minAmountDifference > 0) {
             //this is used when the collateral value is higher than the principal (rare)
             //the loan will be completely made whole and our contract gets extra funds too
-            uint256 tokensToTakeFromSender = abs(_tokenAmountDifference);
+            uint256 tokensToTakeFromSender = abs(minAmountDifference);
 
-            IERC20(principalToken).transferFrom(
+            IERC20(principalToken).safeTransferFrom(
                 msg.sender,
                 address(this),
                 amountDue + tokensToTakeFromSender
@@ -451,12 +470,12 @@ contract LenderCommitmentGroup_Smart is
 
             tokenDifferenceFromLiquidations += int256(tokensToTakeFromSender);
 
-            totalPrincipalTokensRepaid += amountDue;
+
         } else {
            
-            uint256 tokensToGiveToSender = abs(_tokenAmountDifference);
+            uint256 tokensToGiveToSender = abs(minAmountDifference);
 
-            IERC20(principalToken).transferFrom(
+            IERC20(principalToken).safeTransferFrom(
                 msg.sender,
                 address(this),
                 amountDue - tokensToGiveToSender
@@ -556,8 +575,9 @@ contract LenderCommitmentGroup_Smart is
         returns (uint256 price_)
     {
        
-        uint256 priceX96 = (uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96)) /
-            (2**96);
+
+
+        uint256 priceX96 = FullMath.mulDiv(uint256(_sqrtPriceX96), uint256(_sqrtPriceX96), (2**96) );
 
         // sqrtPrice is in X96 format so we scale it down to get the price
         // Also note that this price is a relative price between the two tokens in the pool
@@ -578,19 +598,22 @@ contract LenderCommitmentGroup_Smart is
                 .slot0();
         } else {
             uint32[] memory secondsAgos = new uint32[](2);
-            secondsAgos[0] = twapInterval; // from (before)
-            secondsAgos[1] = 0; // to (now)
+            secondsAgos[0] = twapInterval+1; // from (before)
+            secondsAgos[1] = 1; // to (now)
 
             (int56[] memory tickCumulatives, ) = IUniswapV3Pool(UNISWAP_V3_POOL)
                 .observe(secondsAgos);
 
-            // tick(imprecise as it's an integer) to price
-            sqrtPriceX96 = TickMath.getSqrtRatioAtTick(
-                int24(
-                    (tickCumulatives[1] - tickCumulatives[0]) /
-                        int32(twapInterval)
-                )
-            );
+
+
+              int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];
+              int24 arithmeticMeanTick = int24(tickCumulativesDelta / int32(twapInterval));
+               //// Always round to negative infinity
+              if (tickCumulativesDelta < 0 && (tickCumulativesDelta % int32(twapInterval) != 0)) arithmeticMeanTick--;
+
+               sqrtPriceX96 = TickMath.getSqrtRatioAtTick(arithmeticMeanTick);
+
+
         }
     }
 
@@ -638,8 +661,8 @@ contract LenderCommitmentGroup_Smart is
         bool principalTokenIsToken0
     ) internal pure returns (uint256 collateralTokensAmountToMatchValue) {
         if (principalTokenIsToken0) {
-            //token 1 to token 0 ?
-            uint256 worstCasePairPrice = Math.min(
+
+            uint256 worstCasePairPrice = Math.max(
                 pairPriceWithTwap,
                 pairPriceImmediate
             );
@@ -649,8 +672,8 @@ contract LenderCommitmentGroup_Smart is
                 worstCasePairPrice //if this is lower, collateral tokens amt will be higher
             );
         } else {
-            //token 0 to token 1 ?
-            uint256 worstCasePairPrice = Math.max(
+
+            uint256 worstCasePairPrice = Math.min(
                 pairPriceWithTwap,
                 pairPriceImmediate
             );
@@ -716,6 +739,9 @@ contract LenderCommitmentGroup_Smart is
     {
         return totalPrincipalTokensLended - totalPrincipalTokensRepaid;
     }
+
+
+
 
     function getCollateralTokenAddress() external view returns (address) {
         return address(collateralToken);

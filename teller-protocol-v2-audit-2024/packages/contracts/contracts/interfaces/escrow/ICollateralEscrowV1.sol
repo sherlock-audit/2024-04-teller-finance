@@ -40,6 +40,12 @@ interface ICollateralEscrowV1 {
         address _recipient
     ) external;
 
+    function withdrawDustTokens(
+        address _tokenAddress,
+        uint256 _amount,
+        address _recipient
+    ) external;
+
     function getBid() external view returns (uint256);
 
     function initialize(uint256 _bidId) external;

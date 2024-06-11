@@ -1,0 +1,11 @@
+diff a/teller-protocol-v2-audit-2024/packages/contracts/contracts/interfaces/ISmartCommitment.sol b/teller-protocol-v2-audit-2024/packages/contracts/contracts/interfaces/ISmartCommitment.sol	(rejected hunks)
+@@ -40,8 +40,7 @@ interface ISmartCommitment {
+         view
+         returns (uint256);
+ 
+-    function isAllowedToBorrow(address borrower) external view returns (bool);
+-
++    
+     function acceptFundsForAcceptBid(
+         address _borrower,
+         uint256 _bidId,

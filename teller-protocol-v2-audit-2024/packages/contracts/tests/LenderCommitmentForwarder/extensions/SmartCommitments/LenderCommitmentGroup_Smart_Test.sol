@@ -107,6 +107,8 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
             _uniswapPoolFee,
             _twapInterval
         );
+
+        lenderCommitmentGroupSmart.mock_setFirstDepositMade(true);
     }
 
     function test_initialize() public {
@@ -149,9 +151,11 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
         vm.prank(address(lender));
         principalToken.approve(address(lenderCommitmentGroupSmart), 1000000);
 
+        uint256 minAmountOut = 1000000;
+
         vm.prank(address(lender));
         uint256 sharesAmount_ = lenderCommitmentGroupSmart
-            .addPrincipalToCommitmentGroup(1000000, address(borrower));
+            .addPrincipalToCommitmentGroup(1000000, address(borrower), minAmountOut);
 
         uint256 expectedSharesAmount = 1000000;
 
@@ -176,12 +180,15 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
         //lenderCommitmentGroupSmart.set_totalPrincipalTokensCommitted(1000000);
         //lenderCommitmentGroupSmart.set_totalInterestCollected(2000000);
 
+        uint256 minAmountOut = 500000;
+
+
         vm.prank(address(lender));
         principalToken.approve(address(lenderCommitmentGroupSmart), 1000000);
 
         vm.prank(address(lender));
         uint256 sharesAmount_ = lenderCommitmentGroupSmart
-            .addPrincipalToCommitmentGroup(1000000, address(borrower));
+            .addPrincipalToCommitmentGroup(1000000, address(borrower),minAmountOut);
 
         uint256 expectedSharesAmount = 500000;
 
@@ -252,12 +259,22 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
             sharesAmount
         );
 
+
+      vm.prank(address(lender));
+
+        lenderCommitmentGroupSmart.prepareSharesForWithdraw(sharesAmount);
+
+        vm.warp(1000);
+
         vm.prank(address(lender));
+
+        uint256 minAmountOut = 1000000;
         
          uint256 receivedPrincipalTokens 
           = lenderCommitmentGroupSmart.burnSharesToWithdrawEarnings(
                 sharesAmount,
-                address(lender)
+                address(lender),
+                minAmountOut
             );
 
         uint256 expectedReceivedPrincipalTokens = 1000000; // the orig amt !
@@ -297,12 +314,20 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
             sharesAmount
         );
 
+         vm.prank(address(lender));
+
+        lenderCommitmentGroupSmart.prepareSharesForWithdraw(sharesAmount);
+
+        vm.warp(1000);
+
+        uint256 minAmountOut = 900000;
         vm.prank(address(lender));
         
          uint256 receivedPrincipalTokens 
           = lenderCommitmentGroupSmart.burnSharesToWithdrawEarnings(
                 sharesAmount,
-                address(lender)
+                address(lender),
+                minAmountOut
             );
 
         uint256 expectedReceivedPrincipalTokens = 1000000; // the orig amt !
@@ -332,6 +357,8 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
 
         vm.prank(address(lender));
 
+        uint256 minAmountOut = 500000;
+
         uint256 sharesAmount = 500000;
         //should have all of the shares at this point
         lenderCommitmentGroupSmart.mock_mintShares(
@@ -339,12 +366,21 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
             sharesAmount
         );
 
+
+
+        vm.prank(address(lender));
+
+        lenderCommitmentGroupSmart.prepareSharesForWithdraw(sharesAmount);
+
+        vm.warp(1000);
+
         vm.prank(address(lender));
     
             uint256 receivedPrincipalTokens
          = lenderCommitmentGroupSmart.burnSharesToWithdrawEarnings(
                 sharesAmount,
-                address(lender)
+                address(lender),
+                minAmountOut
             );
 
         uint256 expectedReceivedPrincipalTokens = 500000; // the orig amt !
@@ -529,7 +565,9 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
        vm.prank(address(liquidator));
        principalToken.approve(address(lenderCommitmentGroupSmart), 1e18);
 
-       lenderCommitmentGroupSmart.mock_setMinimumAmountDifferenceToCloseDefaultedLoan(2000);
+       int256 minAmountDifference = 2000;
+
+       lenderCommitmentGroupSmart.mock_setMinimumAmountDifferenceToCloseDefaultedLoan(minAmountDifference);
 
         int256 tokenAmountDifference = 4000;
         vm.prank(address(liquidator));
@@ -540,7 +578,7 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
 
         uint256 updatedBalance = principalToken.balanceOf(address(liquidator));
 
-        int256 expectedDifference = int256(amountOwed) + tokenAmountDifference;
+        int256 expectedDifference = int256(amountOwed) + minAmountDifference;
 
         assertEq(originalBalance - updatedBalance , uint256(expectedDifference), "unexpected tokenDifferenceFromLiquidations");
 
@@ -598,6 +636,69 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
       //make sure lenderCloseloan is called 
        assertEq( _tellerV2.lenderCloseLoanWasCalled(), true, "lender close loan not called");
      }
+
+
+function test_liquidateDefaultedLoanWithIncentive_does_not_double_count_repaid() public {
+
+
+        initialize_group_contract();
+
+        principalToken.transfer(address(liquidator), 1e18);
+        uint256 originalBalance = principalToken.balanceOf(address(liquidator));
+
+        uint256 amountOwed = 1000;
+
+
+        uint256 bidId = 0;
+
+
+       lenderCommitmentGroupSmart.set_mockAmountOwedForBid(amountOwed);
+
+
+        //time has advanced enough to now have a 50 percent discount s
+         vm.warp(1000);   //loanDefaultedTimeStamp ?
+
+       lenderCommitmentGroupSmart.set_mockBidAsActiveForGroup(bidId,true);
+
+       vm.prank(address(liquidator));
+       principalToken.approve(address(lenderCommitmentGroupSmart), 1e18);
+
+
+        lenderCommitmentGroupSmart.set_totalPrincipalTokensRepaid(0);
+
+       lenderCommitmentGroupSmart.mock_setMinimumAmountDifferenceToCloseDefaultedLoan(-500);
+
+        int256 tokenAmountDifference = -500;
+        vm.prank(address(liquidator));
+        lenderCommitmentGroupSmart.liquidateDefaultedLoanWithIncentive(
+           bidId,
+           tokenAmountDifference
+        );
+
+            //simulate the repay loan callback as would happen in a liquidation
+        vm.prank(address(_tellerV2));
+        lenderCommitmentGroupSmart.repayLoanCallback(
+            bidId,
+            address(this),
+            amountOwed,
+            20
+        );
+
+        uint256 updatedBalance = principalToken.balanceOf(address(liquidator));
+
+        uint256 totalPrincipalTokensRepaid = lenderCommitmentGroupSmart.totalPrincipalTokensRepaid();
+
+
+        assertEq(totalPrincipalTokensRepaid, amountOwed, "unexpected totalPrincipalTokensRepaid");
+
+
+      //make sure lenderCloseloan is called
+       assertEq( _tellerV2.lenderCloseLoanWasCalled(), true, "lender close loan not called");
+     }
+
+
+
+
 
 /*
   make sure we get expected data based on the vm warp 
@@ -702,7 +803,7 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
 
  
       uint16 poolUtilizationRatio = lenderCommitmentGroupSmart.getPoolUtilizationRatio( 
-           
+            0
          );
 
 
@@ -710,7 +811,7 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
 
         // submit bid 
         uint16 minInterestRate = lenderCommitmentGroupSmart.getMinInterestRate( 
-           
+           0
          );
 
 
@@ -847,7 +948,7 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
                 );
 
        
-        uint256 expectedAmount = 4500;  
+        uint256 expectedAmount = 9000;
 
         assertEq(
             amountCollateral,
@@ -875,7 +976,7 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
                 );
 
        
-        uint256 expectedAmount = 9000;  
+        uint256 expectedAmount = 18000;
 
         assertEq(
             amountCollateral,
@@ -903,7 +1004,36 @@ contract LenderCommitmentGroup_Smart_Test is Testable {
                 );
 
        
-        uint256 expectedAmount = 1;  
+        uint256 expectedAmount = 9000;
+
+        assertEq(
+            amountCollateral,
+            expectedAmount,
+            "Unexpected getCollateralTokensPricePerPrincipalTokens"
+        );
+    }
+
+
+   function test_getCollateralTokensAmountEquivalentToPrincipalTokens_scenarioD() public {
+
+        initialize_group_contract();
+
+        uint256 principalTokenAmountValue = 9000;
+        uint256 pairPriceWithTwap = 60000 * 2**96;
+        uint256 pairPriceImmediate =  2**96;
+        bool principalTokenIsToken0 = false;
+
+
+        uint256 amountCollateral = lenderCommitmentGroupSmart
+            .super_getCollateralTokensAmountEquivalentToPrincipalTokens(
+                principalTokenAmountValue,
+                pairPriceWithTwap,
+                pairPriceImmediate,
+                principalTokenIsToken0
+                );
+
+
+        uint256 expectedAmount = 9000;
 
         assertEq(
             amountCollateral,

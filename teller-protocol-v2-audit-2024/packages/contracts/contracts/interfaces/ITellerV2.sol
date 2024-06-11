@@ -168,4 +168,7 @@ interface ITellerV2 {
         external
         view
         returns (uint256);
+
+
+    function getEscrowVault() external view returns(address);
 }

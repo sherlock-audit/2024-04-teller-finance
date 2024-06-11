@@ -1,0 +1,553 @@
+diff a/teller-protocol-v2-audit-2024/packages/contracts/contracts/LenderCommitmentForwarder/extensions/LenderCommitmentGroup/LenderCommitmentGroup_Smart.sol b/teller-protocol-v2-audit-2024/packages/contracts/contracts/LenderCommitmentForwarder/extensions/LenderCommitmentGroup/LenderCommitmentGroup_Smart.sol	(rejected hunks)
+@@ -84,21 +89,23 @@ contract LenderCommitmentGroup_Smart is
+ 
+     IERC20 public principalToken;
+     IERC20 public collateralToken;
++    uint24 public uniswapPoolFee;
+ 
+     uint256 marketId;
+ 
+-    //this should be the net total principal tokens ,  lenderAdded - lenderWithdrawn
+-    uint256 public totalPrincipalTokensCommitted;
++ 
++    uint256 public totalPrincipalTokensCommitted; 
++    uint256 public totalPrincipalTokensWithdrawn;
+ 
+     uint256 public totalPrincipalTokensLended;
+     uint256 public totalPrincipalTokensRepaid; //subtract this and the above to find total principal tokens outstanding for loans
+ 
+-    uint256 public totalCollateralTokensEscrowedForLoans; // we use this in conjunction with totalPrincipalTokensLended for a psuedo TWAP price oracle of C tokens, used for exiting  .  Nice bc it is averaged over all of our relevant loans, not the current price.
+-
++    
++ 
+     uint256 public totalInterestCollected;
+ 
+     uint16 public liquidityThresholdPercent; //5000 is 50 pct  // enforce max of 10000
+-    uint16 public loanToValuePercent; //the overcollateralization ratio, typically 80 pct
++    uint16 public collateralRatio; //the overcollateralization ratio, typically 80 pct
+ 
+     uint32 public twapInterval;
+     uint32 public maxLoanDuration;
+@@ -106,16 +113,81 @@ contract LenderCommitmentGroup_Smart is
+     uint16 public interestRateUpperBound;
+ 
+ 
+-    mapping(address => uint256) public principalTokensCommittedByLender;
++
++
++    mapping(address => uint256) public poolSharesPreparedToWithdrawForLender;
++    mapping(address => uint256) public poolSharesPreparedTimestamp;
++    uint256 immutable public WITHDRAW_DELAY_TIME_SECONDS = 300;
++
++
++    //mapping(address => uint256) public principalTokensCommittedByLender;
+     mapping(uint256 => bool) public activeBids;
+ 
+     //this excludes interest
+     // maybe it is possible to get rid of this storage slot and calculate it from totalPrincipalTokensRepaid, totalPrincipalTokensLended
+     int256 tokenDifferenceFromLiquidations;
+ 
++    bool public firstDepositMade;
++
+ 
+    
+ 
++ event PoolInitialized(
++        address indexed principalTokenAddress,
++        address indexed collateralTokenAddress,
++        uint256 marketId,
++        uint32 maxLoanDuration,
++        uint16 interestRateLowerBound,
++        uint16 interestRateUpperBound,
++        uint16 liquidityThresholdPercent,
++        uint16 loanToValuePercent,
++        uint24 uniswapPoolFee,
++        uint32 twapInterval,
++        address poolSharesToken
++    );
++
++    event LenderAddedPrincipal(
++        address indexed lender,
++        uint256 amount,
++        uint256 sharesAmount,
++        address indexed sharesRecipient
++    );
++
++    event BorrowerAcceptedFunds(
++        address indexed borrower,
++        uint256 indexed bidId,
++        uint256 principalAmount,
++        uint256 collateralAmount,
++        uint32 loanDuration,
++        uint16 interestRate
++    );
++
++    event EarningsWithdrawn(
++        address indexed lender,
++        uint256 amountPoolSharesTokens,
++        uint256 principalTokensWithdrawn,
++        address indexed recipient
++    );
++
++
++    event DefaultedLoanLiquidated(
++        uint256 indexed bidId,
++        address indexed liquidator,
++        uint256 amountDue, 
++        int256 tokenAmountDifference 
++    );
++
++
++    event LoanRepaid(
++        uint256 indexed bidId,
++        address indexed repayer,
++        uint256 principalAmount,
++        uint256 interestAmount,
++        uint256 totalPrincipalRepaid,
++        uint256 totalInterestCollected
++    );
++
++
+     modifier onlySmartCommitmentForwarder() {
+         require(
+             msg.sender == address(SMART_COMMITMENT_FORWARDER),
+@@ -162,17 +234,17 @@ contract LenderCommitmentGroup_Smart is
+         uint16 _interestRateLowerBound,
+         uint16 _interestRateUpperBound,
+         uint16 _liquidityThresholdPercent, // When 100% , the entire pool can be drawn for lending.  When 80%, only 80% of the pool can be drawn for lending. 
+-        uint16 _loanToValuePercent, //the required overcollateralization ratio.  10000 is 1:1 baseline , typically this is above 10000
++        uint16 _collateralRatio, //the required overcollateralization ratio.  10000 is 1:1 baseline , typically this is above 10000
+         uint24 _uniswapPoolFee,
+         uint32 _twapInterval
+     ) external initializer returns (address poolSharesToken_) {
+-        // require(!_initialized,"already initialized");
+-        // _initialized = true;
+-
++       
++        __Ownable_init();
+         __Pausable_init();
+ 
+         principalToken = IERC20(_principalTokenAddress);
+         collateralToken = IERC20(_collateralTokenAddress);
++        uniswapPoolFee = _uniswapPoolFee;
+ 
+         UNISWAP_V3_POOL = IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(
+             _principalTokenAddress,
+@@ -198,17 +271,32 @@ contract LenderCommitmentGroup_Smart is
+ 
+ 
+         
+-        require(interestRateUpperBound <= 10000, "invalid _interestRateUpperBound");
++        
+         require(interestRateLowerBound <= interestRateUpperBound, "invalid _interestRateLowerBound");
+ 
+         require(_liquidityThresholdPercent <= 10000, "invalid _liquidityThresholdPercent"); 
+ 
+         liquidityThresholdPercent = _liquidityThresholdPercent;
+-        loanToValuePercent = _loanToValuePercent;
++        collateralRatio = _collateralRatio;
+         twapInterval = _twapInterval;
+ 
+         
+         poolSharesToken_ = _deployPoolSharesToken();
++
++
++        emit PoolInitialized(
++            _principalTokenAddress,
++            _collateralTokenAddress,
++            _marketId,
++            _maxLoanDuration,
++            _interestRateLowerBound,
++            _interestRateUpperBound,
++            _liquidityThresholdPercent,
++            _collateralRatio,
++            _uniswapPoolFee,
++            _twapInterval,
++            poolSharesToken_
++        );
+     }
+ 
+     function _deployPoolSharesToken()
+@@ -221,15 +309,16 @@ contract LenderCommitmentGroup_Smart is
+             address(poolSharesToken) == address(0),
+             "Pool shares already deployed"
+         );
+-
++ 
+         poolSharesToken = new LenderCommitmentGroupShares(
+-            "PoolShares",
+-            "PSH",
++            "LenderGroupShares",
++            "SHR",
+             18  
+         );
+ 
+         return address(poolSharesToken);
+-    }
++    } 
++
+ 
+     /**
+      * @notice This determines the number of shares you get for depositing principal tokens and the number of principal tokens you receive for burning shares
+@@ -237,22 +326,18 @@ contract LenderCommitmentGroup_Smart is
+      */
+ 
+     function sharesExchangeRate() public view virtual returns (uint256 rate_) {
+-        /*
+-        Should get slightly less shares than principal tokens put in !! diluted by ratio of pools actual equity 
+-       */
++        
+ 
+         uint256 poolTotalEstimatedValue = getPoolTotalEstimatedValue();
+-        uint256 poolTotalEstimatedValuePlusInterest = poolTotalEstimatedValue +
+-            totalInterestCollected;
+ 
+-        if (poolTotalEstimatedValue == 0) {
++        if (poolSharesToken.totalSupply() == 0) {
+             return EXCHANGE_RATE_EXPANSION_FACTOR; // 1 to 1 for first swap
+         }
+ 
+         rate_ =
+-            (poolTotalEstimatedValuePlusInterest *
+-                EXCHANGE_RATE_EXPANSION_FACTOR) /
+-            poolTotalEstimatedValue;
++            MathUpgradeable.mulDiv(poolTotalEstimatedValue , 
++                EXCHANGE_RATE_EXPANSION_FACTOR ,
++                  poolSharesToken.totalSupply() );
+     }
+ 
+     function sharesExchangeRateInverse()
+@@ -267,13 +352,14 @@ contract LenderCommitmentGroup_Smart is
+     }
+ 
+     function getPoolTotalEstimatedValue()
+-        internal
++        public
+         view
+         returns (uint256 poolTotalEstimatedValue_)
+     {
+-        int256 poolTotalEstimatedValueSigned = int256(
+-            totalPrincipalTokensCommitted
+-        ) + tokenDifferenceFromLiquidations;
++       
++         int256 poolTotalEstimatedValueSigned = int256(totalPrincipalTokensCommitted) 
++         + int256(totalInterestCollected)  + int256(tokenDifferenceFromLiquidations) 
++         - int256(totalPrincipalTokensWithdrawn);
+ 
+         //if the poolTotalEstimatedValue_ is less than 0, we treat it as 0.  
+         poolTotalEstimatedValue_ = poolTotalEstimatedValueSigned > int256(0)
+@@ -286,19 +372,56 @@ contract LenderCommitmentGroup_Smart is
+     */
+     function addPrincipalToCommitmentGroup(
+         uint256 _amount,
+-        address _sharesRecipient
++        address _sharesRecipient,
++        uint256 _minSharesAmountOut
+     ) external returns (uint256 sharesAmount_) {
+         //transfers the primary principal token from msg.sender into this contract escrow
++
++       
++
+         
+-        principalToken.transferFrom(msg.sender, address(this), _amount);
++ 
++        uint256 principalTokenBalanceBefore = principalToken.balanceOf(address(this));
++
++        principalToken.safeTransferFrom(msg.sender, address(this), _amount);
++ 
++        uint256 principalTokenBalanceAfter = principalToken.balanceOf(address(this));
++ 
++        require( principalTokenBalanceAfter == principalTokenBalanceBefore + _amount, "Token balance was not added properly" );
++
++
+ 
+         sharesAmount_ = _valueOfUnderlying(_amount, sharesExchangeRate());
+ 
++        
++
+         totalPrincipalTokensCommitted += _amount;
+-        principalTokensCommittedByLender[msg.sender] += _amount;
++        
+ 
+         //mint shares equal to _amount and give them to the shares recipient !!!
+         poolSharesToken.mint(_sharesRecipient, sharesAmount_);
++
++
++        //reset prepared amount 
++        poolSharesPreparedToWithdrawForLender[msg.sender] = 0; 
++
++        emit LenderAddedPrincipal( 
++
++            msg.sender,
++            _amount,
++            sharesAmount_,
++            _sharesRecipient
++
++         );
++
++        require( sharesAmount_ >= _minSharesAmountOut, "Invalid: Min Shares AmountOut" );
++ 
++         if(!firstDepositMade){
++            require(msg.sender == owner(), "Owner must initialize the pool with a deposit first.");
++            require( sharesAmount_>= 1e6, "Initial shares amount must be atleast 1e6" );
++
++            firstDepositMade = true;
++        }
+     }
+ 
+     function _valueOfUnderlying(uint256 amount, uint256 rate)
+@@ -337,16 +460,14 @@ contract LenderCommitmentGroup_Smart is
+             getPrincipalAmountAvailableToBorrow() >= _principalAmount,
+             "Invalid loan max principal"
+         );
+-
+-        require(isAllowedToBorrow(_borrower), "unauthorized borrow");
+-
+-        //this is expanded by 10**18
++ 
++ 
+         uint256 requiredCollateral = getCollateralRequiredForPrincipalAmount(
+             _principalAmount
+         );
+ 
+-        require(
+-            (_collateralAmount * STANDARD_EXPANSION_FACTOR) >=
++        require(    
++             _collateralAmount   >=
+                 requiredCollateral,
+             "Insufficient Borrower Collateral"
+         );
+@@ -369,28 +499,58 @@ contract LenderCommitmentGroup_Smart is
+             _bidId,
+             address(this)
+         );
++
++        
++    }
++
++    function prepareSharesForWithdraw(
++        uint256 _amountPoolSharesTokens 
++    ) external returns (bool) {
++        require( poolSharesToken.balanceOf(msg.sender) >= _amountPoolSharesTokens  );
++
++        poolSharesPreparedToWithdrawForLender[msg.sender] = _amountPoolSharesTokens; 
++        poolSharesPreparedTimestamp[msg.sender] = block.timestamp;
++       
++
++        return true; 
+     }
+ 
++
+     /*
+        
+     */
+     function burnSharesToWithdrawEarnings(
+         uint256 _amountPoolSharesTokens,
+-        address _recipient
++        address _recipient,
++        uint256 _minAmountOut
+     ) external returns (uint256) {
+        
++        require(poolSharesPreparedToWithdrawForLender[msg.sender] >= _amountPoolSharesTokens,"Shares not prepared for withdraw");
++        require(poolSharesPreparedTimestamp[msg.sender] <= block.timestamp - WITHDRAW_DELAY_TIME_SECONDS,"Shares not prepared for withdraw");
+ 
+-        
+-        poolSharesToken.burn(msg.sender, _amountPoolSharesTokens);
++        poolSharesPreparedToWithdrawForLender[msg.sender] -= _amountPoolSharesTokens;
+ 
++        //this should compute BEFORE shares burn 
+         uint256 principalTokenValueToWithdraw = _valueOfUnderlying(
+             _amountPoolSharesTokens,
+             sharesExchangeRateInverse()
+         );
+ 
+-        totalPrincipalTokensCommitted -= principalTokenValueToWithdraw;
++        poolSharesToken.burn(msg.sender, _amountPoolSharesTokens);
++
++        totalPrincipalTokensWithdrawn += principalTokenValueToWithdraw;
++
++        principalToken.safeTransfer(_recipient, principalTokenValueToWithdraw);
+ 
+-        principalToken.transfer(_recipient, principalTokenValueToWithdraw);
++
++        emit EarningsWithdrawn(
++            msg.sender,
++            _amountPoolSharesTokens,
++            principalTokenValueToWithdraw,
++            _recipient
++        );
++        
++        require( principalTokenValueToWithdraw >=  _minAmountOut ,"Invalid: Min Amount Out");
+ 
+         return principalTokenValueToWithdraw;
+     }
+@@ -445,26 +609,35 @@ contract LenderCommitmentGroup_Smart is
+ 
+             tokenDifferenceFromLiquidations -= int256(tokensToGiveToSender);
+ 
+-            totalPrincipalTokensRepaid += (amountDue - tokensToGiveToSender);
++           
+         }
+ 
+         //this will give collateral to the caller
+         ITellerV2(TELLER_V2).lenderCloseLoanWithRecipient(_bidId, msg.sender);
++    
++    
++         emit DefaultedLoanLiquidated(
++            _bidId,
++            msg.sender,
++            amountDue, 
++            _tokenAmountDifference
++        );
+     }
+ 
+-    function getAmountOwedForBid(uint256 _bidId, bool _includeInterest)
+-        public
++    
++
++    function _getAmountOwedForBid(uint256 _bidId )
++        internal
+         view
+         virtual
+-        returns (uint256 amountOwed_)
++        returns (uint256 amountDue)
+     {
+-        Payment memory amountOwedPayment = ITellerV2(TELLER_V2)
+-            .calculateAmountOwed(_bidId, block.timestamp);
++        (,,,, amountDue, , ,  )
++         = ITellerV2(TELLER_V2).getLoanSummary(_bidId);
+ 
+-        amountOwed_ = _includeInterest
+-            ? amountOwedPayment.principal + amountOwedPayment.interest
+-            : amountOwedPayment.principal;
++       
+     }
++    
+ 
+     /*
+         This function will calculate the incentive amount (using a uniswap bonus plus a timer)
+@@ -487,7 +660,7 @@ contract LenderCommitmentGroup_Smart is
+         uint256 secondsSinceDefaulted = block.timestamp -
+             _loanDefaultedTimestamp;
+  
+-        int256 incentiveMultiplier = int256(10000) -
++        int256 incentiveMultiplier = int256(86400) -
+             int256(secondsSinceDefaulted);
+ 
+         if (incentiveMultiplier < -10000) {
+@@ -513,7 +686,7 @@ contract LenderCommitmentGroup_Smart is
+             );
+ 
+         //this is an amount of collateral
+-        return baseAmount.percent(loanToValuePercent);
++        return baseAmount.percent(collateralRatio);
+     }
+ 
+     //this result is expanded by UNISWAP_EXPANSION_FACTOR
+@@ -687,21 +864,32 @@ contract LenderCommitmentGroup_Smart is
+         //can use principal amt to increment amt paid back!! nice for math .
+         totalPrincipalTokensRepaid += principalAmount;
+         totalInterestCollected += interestAmount;
++
++         emit LoanRepaid(
++            _bidId,
++            repayer,
++            principalAmount,
++            interestAmount,
++            totalPrincipalTokensRepaid,
++            totalInterestCollected
++        );
+     }
+ 
+-    function getAverageWeightedPriceForCollateralTokensPerPrincipalTokens()
+-        public
+-        view
+-        returns (uint256)
+-    {
+-        if (totalPrincipalTokensLended <= 0) {
+-            return 0;
+-        }
+ 
+-        return
+-            totalCollateralTokensEscrowedForLoans / totalPrincipalTokensLended;
+-    }
++    /*
++        If principaltokens get stuck in the escrow vault for any reason, anyone may
++        call this function to move them from that vault in to this contract 
++    */
++    function withdrawFromEscrowVault ( uint256 _amount ) public  {
+ 
++
++        address _escrowVault = ITellerV2(TELLER_V2).getEscrowVault();
++
++        IEscrowVault(_escrowVault).withdraw(address(principalToken), _amount );
++
++    }
++ 
++  
+     function getTotalPrincipalTokensOutstandingInActiveLoans()
+         public
+         view
+@@ -746,39 +937,46 @@ contract LenderCommitmentGroup_Smart is
+         return maxLoanDuration;
+     }
+ 
+-    //this is always between 0 and 10000
+-    function getPoolUtilizationRatio() public view returns (uint16) {
+ 
+-        if (totalPrincipalTokensCommitted == 0) {
++ function getPoolUtilizationRatio(uint256 activeLoansAmountDelta ) public view returns (uint16) {
++
++        if (getPoolTotalEstimatedValue() == 0) {
+             return 0;
+         }
+ 
+-        return uint16(  Math.min(  (totalPrincipalTokensLended - totalPrincipalTokensRepaid)  * 10000  /   totalPrincipalTokensCommitted , 10000  ));
+-    }   
++        return uint16(  Math.min(                          
++                            MathUpgradeable.mulDiv( 
++                                (getTotalPrincipalTokensOutstandingInActiveLoans() + activeLoansAmountDelta), 
++                                10000  ,
++                                getPoolTotalEstimatedValue() ) , 
++                        10000  ));
+ 
+- 
+-    function getMinInterestRate() public view returns (uint16) {
+-        return interestRateLowerBound + uint16( uint256(interestRateUpperBound-interestRateLowerBound).percent(getPoolUtilizationRatio()) );
+     }
+ 
++  function getMinInterestRate(uint256 amountDelta) public view returns (uint16) {
++        return interestRateLowerBound + 
++        uint16( uint256(interestRateUpperBound-interestRateLowerBound)
++        .percent(getPoolUtilizationRatio(amountDelta )
++        
++        ) );
++    } 
++    
++
+     function getPrincipalTokenAddress() external view returns (address) {
+         return address(principalToken);
+     }
+ 
+-    function isAllowedToBorrow(address borrower) public view returns (bool) {
+-        return true;
+-    }
++   
+ 
+     function getPrincipalAmountAvailableToBorrow()
+         public
+         view
+         returns (uint256)
+-    {
+-        int256 amountAvailable = int256(totalPrincipalTokensCommitted) -
+-            int256(getTotalPrincipalTokensOutstandingInActiveLoans()) +
+-            tokenDifferenceFromLiquidations;
++    {     
+ 
+-        return uint256(amountAvailable).percent(liquidityThresholdPercent);
++            return  ( uint256( getPoolTotalEstimatedValue() )).percent(liquidityThresholdPercent) -
++            getTotalPrincipalTokensOutstandingInActiveLoans() ;
++     
+     }
+ 
+     /**

@@ -1,0 +1,33 @@
+diff a/teller-protocol-v2-audit-2024/packages/contracts/tests/LenderCommitmentForwarder/extensions/SmartCommitments/LenderCommitmentGroup_Smart_Override.sol b/teller-protocol-v2-audit-2024/packages/contracts/tests/LenderCommitmentForwarder/extensions/SmartCommitments/LenderCommitmentGroup_Smart_Override.sol	(rejected hunks)
+@@ -70,21 +80,26 @@ contract LenderCommitmentGroup_Smart_Override is LenderCommitmentGroup_Smart {
+     }
+ 
+ 
++    function set_totalPrincipalTokensRepaid(uint256 _mockAmt) public {
++        totalPrincipalTokensRepaid = _mockAmt;
++    }
+ 
+     function set_totalPrincipalTokensCommitted(uint256 _mockAmt) public {
+         totalPrincipalTokensCommitted = _mockAmt;
+     }
+ 
++      function set_totalPrincipalTokensWithdrawn(uint256 _mockAmt) public {
++        totalPrincipalTokensWithdrawn = _mockAmt;
++    }
++
+     function set_totalInterestCollected(uint256 _mockAmt) public {
+         totalInterestCollected = _mockAmt;
+     }
+ 
+-    function set_principalTokensCommittedByLender(
+-        address lender,
+-        uint256 _mockAmt
+-    ) public {
+-        principalTokensCommittedByLender[lender] = _mockAmt;
++      function set_tokenDifferenceFromLiquidations(int256 _mockAmt) public {
++        tokenDifferenceFromLiquidations = _mockAmt;
+     }
++ 
+ 
+     function mock_mintShares(address _sharesRecipient, uint256 _mockAmt)
+         public
