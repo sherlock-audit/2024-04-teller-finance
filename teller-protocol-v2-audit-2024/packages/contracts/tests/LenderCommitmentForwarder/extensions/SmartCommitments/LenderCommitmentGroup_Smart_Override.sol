@@ -41,6 +41,16 @@ contract LenderCommitmentGroup_Smart_Override is LenderCommitmentGroup_Smart {
     } 
 
 
+
+  function mock_prepareSharesForWithdraw(
+        uint256 _amountPoolSharesTokens
+    ) external   {
+        poolSharesPreparedToWithdrawForLender[msg.sender] = _amountPoolSharesTokens;
+        poolSharesPreparedTimestamp[msg.sender] = block.timestamp;
+
+    }
+
+
     function getMinimumAmountDifferenceToCloseDefaultedLoan(
         
         uint256 _amountOwed,
@@ -59,8 +69,8 @@ contract LenderCommitmentGroup_Smart_Override is LenderCommitmentGroup_Smart {
         return super.getMinimumAmountDifferenceToCloseDefaultedLoan(_amountOwed,_loanDefaultedTimestamp);
     }
 
-    function getAmountOwedForBid(uint256 _bidId, bool _includeInterest)
-     public override view returns (uint256){
+    function _getAmountOwedForBid(uint256 _bidId )
+     internal override view returns (uint256){
         return mockAmountOwed;
 
      }
@@ -70,6 +80,9 @@ contract LenderCommitmentGroup_Smart_Override is LenderCommitmentGroup_Smart {
     }
 
 
+    function set_totalPrincipalTokensRepaid(uint256 _mockAmt) public {
+        totalPrincipalTokensRepaid = _mockAmt;
+    }
 
     function set_totalPrincipalTokensCommitted(uint256 _mockAmt) public {
         totalPrincipalTokensCommitted = _mockAmt;
@@ -98,7 +111,10 @@ contract LenderCommitmentGroup_Smart_Override is LenderCommitmentGroup_Smart {
         mockMaxPrincipalPerCollateralAmount = amt;
     }
 
+    function mock_setFirstDepositMade(bool made) public {
+        firstDepositMade = made;
 
+    }
 
     function sharesExchangeRate() public override view returns (uint256 rate_) {
         

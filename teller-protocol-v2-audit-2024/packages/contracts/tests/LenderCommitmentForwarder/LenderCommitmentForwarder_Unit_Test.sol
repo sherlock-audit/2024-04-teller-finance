@@ -1355,6 +1355,79 @@ contract LenderCommitmentForwarder_Test is Testable {
         ///assertEq(uint16(cType), uint16(CollateralType.NONE), "unexpected collateral type");
     }
 
+
+    function test_acceptCommitment_logic_error_check() public {
+        ILenderCommitmentForwarder.Commitment
+            memory c = ILenderCommitmentForwarder.Commitment({
+                maxPrincipal: maxPrincipal,
+                expiration: expiration,
+                maxDuration: maxDuration,
+                minInterestRate: minInterestRate,
+                collateralTokenAddress: address(collateralToken),
+                collateralTokenId: collateralTokenId,
+                maxPrincipalPerCollateralAmount: maxPrincipalPerCollateralAmount,
+                collateralTokenType: collateralTokenType,
+                lender: address(lender),
+                marketId: marketId,
+                principalTokenAddress: address(principalToken)
+            });
+
+         //uint256 commitmentId = 0;
+
+        // lenderCommitmentForwarder.setCommitment(commitmentId, c);
+        uint256 commitmentId = lender._createCommitment(c, emptyArray);
+
+        uint256 principalAmount = maxPrincipal;
+        uint256 collateralAmount = 1000;
+        uint16 interestRate = minInterestRate;
+        uint32 loanDuration = maxDuration;
+
+        // vm.expectRevert("collateral token mismatch");
+        lenderCommitmentForwarder.acceptCommitment(
+            commitmentId,
+            principalAmount,
+            collateralAmount,
+            collateralTokenId,
+            address(collateralToken),
+            interestRate,
+            loanDuration
+        );
+
+        assertEq(
+            lenderCommitmentForwarder.getCommitmentMaxPrincipal(commitmentId),
+            maxPrincipal,
+            "Max principal changed"
+        );
+
+        ILenderCommitmentForwarder.Commitment
+            memory c2 = ILenderCommitmentForwarder.Commitment({
+                maxPrincipal: maxPrincipal - 100,
+                expiration: expiration,
+                maxDuration: maxDuration,
+                minInterestRate: minInterestRate,
+                collateralTokenAddress: address(collateralToken),
+                collateralTokenId: collateralTokenId,
+                maxPrincipalPerCollateralAmount: maxPrincipalPerCollateralAmount,
+                collateralTokenType: collateralTokenType,
+                lender: address(lender),
+                marketId: marketId,
+                principalTokenAddress: address(principalToken)
+            });
+
+            principalAmount = maxPrincipal - 100;
+        //commitmentId = 1
+         commitmentId = lender._createCommitment(c2, emptyArray);
+        lenderCommitmentForwarder.acceptCommitment(
+            commitmentId,
+            principalAmount,
+            collateralAmount,
+            collateralTokenId,
+            address(collateralToken),
+            interestRate,
+            loanDuration
+        );
+    }
+
     /*
         Overrider methods for exercise 
     */
