@@ -40,6 +40,11 @@ contract TellerV2SolMock is ITellerV2, IProtocolFee, TellerV2Storage , ILoanRepa
     }
 
 
+    function getEscrowVault() external view returns(address){
+        return address(0);
+    }
+
+
     function approveMarketForwarder(uint256 _marketId, address _forwarder)
         external
     {
