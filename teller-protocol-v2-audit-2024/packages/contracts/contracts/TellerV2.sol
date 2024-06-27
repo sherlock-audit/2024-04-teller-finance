@@ -726,7 +726,7 @@ contract TellerV2 is
         acceptedLoan(_bidId, "lenderClaimCollateral")
     {
         Bid storage bid = bids[_bidId];
-        address _collateralRecipient = bid.lender;
+        address _collateralRecipient = getLoanLender(_bidId);
 
         _lenderCloseLoanWithRecipient(_bidId, _collateralRecipient);
     }
@@ -752,23 +752,10 @@ contract TellerV2 is
         bid.state = BidState.CLOSED;
 
         address sender = _msgSenderForMarket(bid.marketplaceId);
-        require(sender == bid.lender, "only lender can close loan");
-
-        /*
+        require(sender == getLoanLender(_bidId), "only lender can close loan");
 
 
-          address collateralManagerForBid = address(_getCollateralManagerForBid(_bidId)); 
-
-          if( collateralManagerForBid == address(collateralManagerV2) ){
-             ICollateralManagerV2(collateralManagerForBid).lenderClaimCollateral(_bidId,_collateralRecipient);
-          }else{
-             require( _collateralRecipient == address(bid.lender));
-             ICollateralManager(collateralManagerForBid).lenderClaimCollateral(_bidId );
-          }
-          
-          */
-
-        collateralManager.lenderClaimCollateral(_bidId);
+        collateralManager.lenderClaimCollateralWithRecipient(_bidId, _collateralRecipient);
 
         emit LoanClosed(_bidId);
     }
@@ -949,9 +936,10 @@ contract TellerV2 is
         address loanRepaymentListener = repaymentListenerForBid[_bidId];
 
         if (loanRepaymentListener != address(0)) {
+            require(gasleft() >= 40000, "Insufficient gas");  //fixes the 63/64 remaining issue
             try
                 ILoanRepaymentListener(loanRepaymentListener).repayLoanCallback{
-                    gas: 80000
+                    gas: 40000
                 }( //limit gas costs to prevent lender griefing repayments
                     _bidId,
                     _msgSenderForMarket(bid.marketplaceId),
@@ -1104,6 +1092,10 @@ contract TellerV2 is
             dueDate + defaultDuration + _additionalDelay;
     }
 
+    function getEscrowVault() external view returns(address){
+        return address(escrowVault);
+    }
+
     function getBidState(uint256 _bidId)
         external
         view
@@ -1245,18 +1237,24 @@ contract TellerV2 is
         return dueDate + defaultDuration;
     }
 
-    function setRepaymentListenerForBid(uint256 _bidId, address _listener)
-        external
-    {
+    function setRepaymentListenerForBid(uint256 _bidId, address _listener) external {
+        uint256 codeSize;
+        assembly {
+            codeSize := extcodesize(_listener)
+        }
+        require(codeSize > 0, "Listener must be a contract");
         address sender = _msgSenderForMarket(bids[_bidId].marketplaceId);
 
         require(
-            sender == bids[_bidId].lender,
+            sender == getLoanLender(_bidId),
             "Only bid lender may set repayment listener"
         );
 
         repaymentListenerForBid[_bidId] = _listener;
-    }
+     }
+
+
+
 
     function getRepaymentListenerForBid(uint256 _bidId)
         external
